@@ -5,28 +5,17 @@ import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { io } from 'socket.io-client';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
-
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://syncscript-server-0rc2.onrender.com";
+const socket = io(SERVER_URL);
 function DocumentEditor() {
   const { id: documentId } = useParams();
-  const [socket, setSocket] = useState(null);
   const [documentText, setDocumentText] = useState('');
   const [title, setTitle] = useState('Untitled Document');
   const [userCount, setUserCount] = useState(1);
 
-  // 1. Initialize socket connection
+  // Join document room and register sync listeners.
   useEffect(() => {
-    const s = io(SERVER_URL);
-    setSocket(s);
-
-    return () => {
-      s.disconnect();
-    };
-  }, []);
-
-  // 2. Join document room & register sync listeners
-  useEffect(() => {
-    if (!socket || !documentId) return;
+    if (!documentId) return;
 
     socket.emit('get-document', documentId);
 
@@ -52,7 +41,7 @@ function DocumentEditor() {
       socket.off('receive-title-change');
       socket.off('update-user-count');
     };
-  }, [socket, documentId]);
+  }, [documentId]);
 
   // 3. Periodic autosave every 2 seconds
   useEffect(() => {
@@ -63,7 +52,7 @@ function DocumentEditor() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [socket, documentId, documentText]);
+  }, [documentId, documentText]);
 
   // 4. Handle text edits
   const handleEditorChange = (content, delta, source) => {
