@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import DOMPurify from "dompurify";
 
+// Expose DOMPurify globally so you can test it directly in DevTools Console
+window.DOMPurify = DOMPurify;
+
 const SERVER_URL = "https://syncscript-server-0rc2.onrender.com";
 
 export default function App() {
@@ -54,7 +57,6 @@ export default function App() {
       if (editorRef.current) {
         isIncomingChange.current = true;
         const rawContent = typeof doc === "string" ? doc : (doc?.data || "");
-        // Sanitize database content before rendering
         editorRef.current.innerHTML = DOMPurify.sanitize(rawContent);
       }
     });
@@ -62,7 +64,6 @@ export default function App() {
     socket.on("receive-changes", (incomingHtml) => {
       if (editorRef.current) {
         isIncomingChange.current = true;
-        // Sanitize incoming WebSocket data before rendering
         editorRef.current.innerHTML = DOMPurify.sanitize(incomingHtml);
       }
     });
@@ -78,7 +79,7 @@ export default function App() {
     };
   }, [socket]);
 
-  // 3. Emit Sanitized Changes to Server & Database
+  // 3. Emit Sanitized Changes
   const handleInput = () => {
     if (isIncomingChange.current) {
       isIncomingChange.current = false;
@@ -86,21 +87,34 @@ export default function App() {
     }
     if (!socket || !editorRef.current) return;
     
-    // Sanitize before broadcasting and saving
     const cleanHtml = DOMPurify.sanitize(editorRef.current.innerHTML);
-    
     socket.emit("send-changes", cleanHtml);
     socket.emit("save-document", cleanHtml);
   };
 
-  // 4. Formatting Actions
+  // 4. Sanitize Clipboard Paste Events Before Insertion
+  const handlePaste = (e) => {
+    e.preventDefault();
+    const clipboardHtml = e.clipboardData.getData("text/html");
+    const clipboardText = e.clipboardData.getData("text/plain");
+    
+    // Sanitize HTML if available, otherwise fallback to plain text
+    const cleanContent = clipboardHtml 
+      ? DOMPurify.sanitize(clipboardHtml) 
+      : DOMPurify.sanitize(clipboardText);
+
+    document.execCommand("insertHTML", false, cleanContent);
+    handleInput();
+  };
+
+  // 5. Formatting Actions
   const format = (command, value = null) => {
     document.execCommand(command, false, value);
     if (editorRef.current) editorRef.current.focus();
     handleInput();
   };
 
-  // 5. File Export Actions
+  // 6. File Export Actions
   const exportFile = (formatType) => {
     if (!editorRef.current) return;
     const content = formatType === "txt" 
@@ -163,6 +177,7 @@ export default function App() {
           contentEditable
           suppressContentEditableWarning
           onInput={handleInput}
+          onPaste={handlePaste}
           style={styles.editorPage}
         />
       </main>
