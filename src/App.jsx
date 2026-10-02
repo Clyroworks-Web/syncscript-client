@@ -2,43 +2,63 @@ import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import DOMPurify from "dompurify";
 
+// Expose DOMPurify globally for browser console tests
 window.DOMPurify = DOMPurify;
+
 const SERVER_URL = "https://syncscript-server-0rc2.onrender.com";
 
+const CURSOR_COLORS = [
+  "#ef4444", "#3b82f6", "#10b981", "#f59e0b", 
+  "#8b5cf6", "#ec4899", "#06b6d4", "#f97316"
+];
+
+// Helper: Resolve Room ID and persist or retrieve the creator's Host Key
+const getRoomData = () => {
+  const path = window.location.pathname;
+  const match = path.match(/\/documents\/([a-zA-Z0-9_-]+)/);
+  
+  if (match && match[1]) {
+    const id = match[1];
+    let hostKey = localStorage.getItem(`syncscript_host_${id}`);
+    
+    // Auto-claim host permissions locally if not yet registered in this browser
+    if (!hostKey) {
+      hostKey = crypto.randomUUID();
+      localStorage.setItem(`syncscript_host_${id}`, hostKey);
+    }
+    return { id, hostKey, isInitialHost: true };
+  }
+
+  const newId = crypto.randomUUID();
+  const newHostKey = crypto.randomUUID();
+  localStorage.setItem(`syncscript_host_${newId}`, newHostKey);
+  window.history.replaceState(null, "", `/documents/${newId}`);
+  return { id: newId, hostKey: newHostKey, isInitialHost: true };
+};
+
 export default function App() {
+  const roomData = useRef(getRoomData());
+
   const [title, setTitle] = useState("Untitled Document");
   const [collaborators, setCollaborators] = useState(1);
   const [socket, setSocket] = useState(null);
   const [copied, setCopied] = useState(false);
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [isLocked, setIsLocked] = useState(false);
-  const [isHost, setIsHost] = useState(false);
+  const [isHost, setIsHost] = useState(roomData.current.isInitialHost);
+  const [remoteCursors, setRemoteCursors] = useState({});
 
   const editorRef = useRef(null);
+  const editorWrapperRef = useRef(null);
   const isIncomingChange = useRef(false);
   const saveTimeoutRef = useRef(null);
+  const lastCursorEmit = useRef(0);
 
-  // 1. Get or Generate Room ID & Host Key
-  const getRoomData = () => {
-    const path = window.location.pathname;
-    const match = path.match(/\/documents\/([a-zA-Z0-9_-]+)/);
-    
-    if (match && match[1]) {
-      const id = match[1];
-      const existingHostKey = localStorage.getItem(`syncscript_host_${id}`);
-      return { id, hostKey: existingHostKey || null };
-    }
+  const userColor = useRef(
+    CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)]
+  );
 
-    const newId = crypto.randomUUID();
-    const newHostKey = crypto.randomUUID();
-    localStorage.setItem(`syncscript_host_${newId}`, newHostKey);
-    window.history.replaceState(null, "", `/documents/${newId}`);
-    return { id: newId, hostKey: newHostKey };
-  };
-
-  const roomData = useRef(getRoomData());
-
-  // 2. Establish Socket Connection
+  // 1. Establish Socket Connection
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
@@ -59,7 +79,7 @@ export default function App() {
     };
   }, []);
 
-  // 3. Socket Event Handlers
+  // 2. Real-time Events & Room Initialization
   useEffect(() => {
     if (!socket) return;
 
@@ -101,18 +121,49 @@ export default function App() {
       setCollaborators(count);
     });
 
+    socket.on("cursor-update", ({ socketId, x, y, color }) => {
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [socketId]: { x, y, color },
+      }));
+    });
+
+    socket.on("cursor-remove", (socketId) => {
+      setRemoteCursors((prev) => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+    });
+
     return () => {
       socket.off("room-init");
       socket.off("load-document");
       socket.off("receive-changes");
       socket.off("lock-updated");
       socket.off("user-count");
+      socket.off("cursor-update");
+      socket.off("cursor-remove");
     };
   }, [socket]);
 
   const canEdit = !isLocked || isHost;
 
-  // 4. Input Handler with Debounced Auto-Save
+  // 3. Mouse Movement Broadcaster (Throttled to 40ms)
+  const handleMouseMove = (e) => {
+    if (!socket || !editorWrapperRef.current) return;
+    const now = Date.now();
+    if (now - lastCursorEmit.current < 40) return;
+    lastCursorEmit.current = now;
+
+    const rect = editorWrapperRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left + editorWrapperRef.current.scrollLeft;
+    const y = e.clientY - rect.top + editorWrapperRef.current.scrollTop;
+
+    socket.emit("cursor-move", { x, y, color: userColor.current });
+  };
+
+  // 4. Editor Input Handler with Debounced Auto-Save
   const handleInput = () => {
     if (!canEdit || isIncomingChange.current || !socket || !editorRef.current) {
       isIncomingChange.current = false;
@@ -158,7 +209,7 @@ export default function App() {
     });
   };
 
-  // 7. Copy Link Handler
+  // 7. Copy URL to Clipboard
   const handleCopyLink = () => {
     const cleanUrl = `${window.location.origin}/documents/${roomData.current.id}`;
     navigator.clipboard.writeText(cleanUrl).then(() => {
@@ -175,7 +226,7 @@ export default function App() {
     handleInput();
   };
 
-  // 9. Document Exporter
+  // 9. Document Exporters
   const exportFile = (formatType) => {
     if (!editorRef.current) return;
     const content = formatType === "txt"
@@ -200,6 +251,10 @@ export default function App() {
             value={title}
             disabled={!canEdit}
             onChange={(e) => setTitle(e.target.value)}
+            onFocus={(e) => e.target.select()}
+            onBlur={(e) => {
+              if (!e.target.value.trim()) setTitle("Untitled Document");
+            }}
             style={styles.titleInput}
             placeholder="Untitled Document"
           />
@@ -297,7 +352,53 @@ export default function App() {
         <button style={styles.toolBtn} onClick={() => format("removeFormat")}>T<sub>x</sub></button>
       </div>
 
-      <main style={styles.editorWrapper}>
+      {/* Editor & Remote Cursors Workspace */}
+      <main 
+        ref={editorWrapperRef} 
+        onMouseMove={handleMouseMove} 
+        style={styles.editorWrapper}
+      >
+        {Object.entries(remoteCursors).map(([id, cursor]) => (
+          <div
+            key={id}
+            style={{
+              position: "absolute",
+              left: `${cursor.x}px`,
+              top: `${cursor.y}px`,
+              pointerEvents: "none",
+              zIndex: 50,
+              transition: "left 0.06s linear, top 0.06s linear",
+            }}
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill={cursor.color || "#3b82f6"}
+              stroke="#ffffff"
+              strokeWidth="1.5"
+            >
+              <path d="M3 3l7 18 3-7 7-3L3 3z" />
+            </svg>
+            <div
+              style={{
+                backgroundColor: cursor.color || "#3b82f6",
+                color: "#ffffff",
+                fontSize: "11px",
+                fontWeight: "600",
+                padding: "2px 6px",
+                borderRadius: "4px",
+                marginLeft: "12px",
+                marginTop: "-4px",
+                whiteSpace: "nowrap",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.3)",
+              }}
+            >
+              Collaborator
+            </div>
+          </div>
+        ))}
+
         <div
           ref={editorRef}
           contentEditable={canEdit}
@@ -453,6 +554,7 @@ const styles = {
     display: "flex",
     justifyContent: "center",
     padding: "32px 16px",
+    position: "relative",
   },
   editorPage: {
     width: "850px",
