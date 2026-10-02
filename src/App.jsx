@@ -2,9 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import DOMPurify from "dompurify";
 
-// Expose DOMPurify globally for browser console tests
 window.DOMPurify = DOMPurify;
-
 const SERVER_URL = "https://syncscript-server-0rc2.onrender.com";
 
 const CURSOR_COLORS = [
@@ -12,28 +10,24 @@ const CURSOR_COLORS = [
   "#8b5cf6", "#ec4899", "#06b6d4", "#f97316"
 ];
 
-// Helper: Resolve Room ID and persist or retrieve the creator's Host Key
+// Resolve Document ID and Host Key
 const getRoomData = () => {
   const path = window.location.pathname;
   const match = path.match(/\/documents\/([a-zA-Z0-9_-]+)/);
-  
+
   if (match && match[1]) {
     const id = match[1];
-    let hostKey = localStorage.getItem(`syncscript_host_${id}`);
-    
-    // Auto-claim host permissions locally if not yet registered in this browser
-    if (!hostKey) {
-      hostKey = crypto.randomUUID();
-      localStorage.setItem(`syncscript_host_${id}`, hostKey);
-    }
-    return { id, hostKey, isInitialHost: true };
+    // Existing room: read host key if this browser created it; do not invent a key for guests
+    const existingHostKey = localStorage.getItem(`syncscript_host_${id}`);
+    return { id, hostKey: existingHostKey || null, isCreator: Boolean(existingHostKey) };
   }
 
+  // Creating a brand-new document from the root URL
   const newId = crypto.randomUUID();
   const newHostKey = crypto.randomUUID();
   localStorage.setItem(`syncscript_host_${newId}`, newHostKey);
   window.history.replaceState(null, "", `/documents/${newId}`);
-  return { id: newId, hostKey: newHostKey, isInitialHost: true };
+  return { id: newId, hostKey: newHostKey, isCreator: true };
 };
 
 export default function App() {
@@ -45,12 +39,11 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [isLocked, setIsLocked] = useState(false);
-  const [isHost, setIsHost] = useState(roomData.current.isInitialHost);
+  const [isHost, setIsHost] = useState(roomData.current.isCreator);
   const [remoteCursors, setRemoteCursors] = useState({});
 
   const editorRef = useRef(null);
   const editorWrapperRef = useRef(null);
-  const isIncomingChange = useRef(false);
   const saveTimeoutRef = useRef(null);
   const lastCursorEmit = useRef(0);
 
@@ -58,7 +51,7 @@ export default function App() {
     CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)]
   );
 
-  // 1. Establish Socket Connection
+  // 1. Connect to WebSocket Server
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
@@ -66,11 +59,11 @@ export default function App() {
     setSocket(s);
 
     s.on("connect", () => {
-      console.log("Connected to live server:", s.id);
+      console.log("Connected to live server with ID:", s.id);
     });
 
     s.on("connect_error", (error) => {
-      console.error("Socket error:", error.message);
+      console.error("Socket connection error:", error.message);
     });
 
     return () => {
@@ -79,7 +72,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Real-time Events & Room Initialization
+  // 2. Room Management & Events
   useEffect(() => {
     if (!socket) return;
 
@@ -97,18 +90,16 @@ export default function App() {
       }
     });
 
-    socket.on("load-document", (doc) => {
+    socket.on("load-document", (docContent) => {
       if (editorRef.current) {
-        isIncomingChange.current = true;
-        const rawContent = typeof doc === "string" ? doc : (doc?.data || "");
-        editorRef.current.innerHTML = DOMPurify.sanitize(rawContent);
+        const raw = typeof docContent === "string" ? docContent : (docContent?.data || "");
+        editorRef.current.innerHTML = DOMPurify.sanitize(raw);
         setSaveStatus("Saved");
       }
     });
 
     socket.on("receive-changes", (incomingHtml) => {
       if (editorRef.current) {
-        isIncomingChange.current = true;
         editorRef.current.innerHTML = DOMPurify.sanitize(incomingHtml);
       }
     });
@@ -147,9 +138,10 @@ export default function App() {
     };
   }, [socket]);
 
+  // Determine if this user is allowed to edit
   const canEdit = !isLocked || isHost;
 
-  // 3. Mouse Movement Broadcaster (Throttled to 40ms)
+  // 3. Mouse Movement Broadcaster
   const handleMouseMove = (e) => {
     if (!socket || !editorWrapperRef.current) return;
     const now = Date.now();
@@ -163,12 +155,9 @@ export default function App() {
     socket.emit("cursor-move", { x, y, color: userColor.current });
   };
 
-  // 4. Editor Input Handler with Debounced Auto-Save
+  // 4. Editor Typing Sync & Debounced Save
   const handleInput = () => {
-    if (!canEdit || isIncomingChange.current || !socket || !editorRef.current) {
-      isIncomingChange.current = false;
-      return;
-    }
+    if (!canEdit || !socket || !editorRef.current) return;
 
     const cleanHtml = DOMPurify.sanitize(editorRef.current.innerHTML);
     socket.emit("send-changes", cleanHtml);
@@ -209,7 +198,7 @@ export default function App() {
     });
   };
 
-  // 7. Copy URL to Clipboard
+  // 7. Copy URL
   const handleCopyLink = () => {
     const cleanUrl = `${window.location.origin}/documents/${roomData.current.id}`;
     navigator.clipboard.writeText(cleanUrl).then(() => {
@@ -226,7 +215,7 @@ export default function App() {
     handleInput();
   };
 
-  // 9. Document Exporters
+  // 9. Document Exporter
   const exportFile = (formatType) => {
     if (!editorRef.current) return;
     const content = formatType === "txt"
@@ -287,7 +276,6 @@ export default function App() {
             </button>
           )}
 
-          {/* Copy Link (Blue) */}
           <button
             style={{
               ...styles.btnBase,
@@ -299,7 +287,6 @@ export default function App() {
             {copied ? "✓ Copied!" : "📋 Copy Link"}
           </button>
 
-          {/* Export TXT (Teal) */}
           <button
             style={{
               ...styles.btnBase,
@@ -311,7 +298,6 @@ export default function App() {
             📄 Export TXT
           </button>
 
-          {/* Export MD (Violet) */}
           <button
             style={{
               ...styles.btnBase,
