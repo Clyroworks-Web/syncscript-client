@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
+import DOMPurify from "dompurify";
 
-// Direct production backend URL
 const SERVER_URL = "https://syncscript-server-0rc2.onrender.com";
 
 export default function App() {
@@ -11,7 +11,6 @@ export default function App() {
   const editorRef = useRef(null);
   const isIncomingChange = useRef(false);
 
-  // Extract or generate document room ID
   const getDocumentId = () => {
     const path = window.location.pathname;
     const match = path.match(/\/documents\/([a-zA-Z0-9_-]+)/);
@@ -45,7 +44,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Room Management & Incoming Real-time Updates
+  // 2. Room Management & Incoming Real-time Updates (Sanitized)
   useEffect(() => {
     if (!socket) return;
 
@@ -54,14 +53,17 @@ export default function App() {
     socket.on("load-document", (doc) => {
       if (editorRef.current) {
         isIncomingChange.current = true;
-        editorRef.current.innerHTML = typeof doc === "string" ? doc : (doc?.data || "");
+        const rawContent = typeof doc === "string" ? doc : (doc?.data || "");
+        // Sanitize database content before rendering
+        editorRef.current.innerHTML = DOMPurify.sanitize(rawContent);
       }
     });
 
     socket.on("receive-changes", (incomingHtml) => {
       if (editorRef.current) {
         isIncomingChange.current = true;
-        editorRef.current.innerHTML = incomingHtml;
+        // Sanitize incoming WebSocket data before rendering
+        editorRef.current.innerHTML = DOMPurify.sanitize(incomingHtml);
       }
     });
 
@@ -76,16 +78,19 @@ export default function App() {
     };
   }, [socket]);
 
-  // 3. Emit Outgoing Changes to Server & MongoDB
+  // 3. Emit Sanitized Changes to Server & Database
   const handleInput = () => {
     if (isIncomingChange.current) {
       isIncomingChange.current = false;
       return;
     }
     if (!socket || !editorRef.current) return;
-    const html = editorRef.current.innerHTML;
-    socket.emit("send-changes", html);
-    socket.emit("save-document", html);
+    
+    // Sanitize before broadcasting and saving
+    const cleanHtml = DOMPurify.sanitize(editorRef.current.innerHTML);
+    
+    socket.emit("send-changes", cleanHtml);
+    socket.emit("save-document", cleanHtml);
   };
 
   // 4. Formatting Actions
@@ -100,7 +105,7 @@ export default function App() {
     if (!editorRef.current) return;
     const content = formatType === "txt" 
       ? editorRef.current.innerText 
-      : editorRef.current.innerHTML;
+      : DOMPurify.sanitize(editorRef.current.innerHTML);
     
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -113,7 +118,6 @@ export default function App() {
 
   return (
     <div style={styles.container}>
-      {/* Top Header */}
       <header style={styles.topBar}>
         <input
           type="text"
@@ -131,7 +135,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Rich Text Toolbar */}
       <div style={styles.toolbar}>
         <select
           style={styles.select}
@@ -154,7 +157,6 @@ export default function App() {
         <button style={styles.toolBtn} onClick={() => format("removeFormat")}>T<sub>x</sub></button>
       </div>
 
-      {/* Document Workspace */}
       <main style={styles.editorWrapper}>
         <div
           ref={editorRef}
