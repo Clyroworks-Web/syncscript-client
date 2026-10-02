@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import DOMPurify from "dompurify";
 
-// Expose DOMPurify globally so you can test it directly in DevTools Console
+// Expose DOMPurify globally for browser console testing
 window.DOMPurify = DOMPurify;
 
 const SERVER_URL = "https://syncscript-server-0rc2.onrender.com";
@@ -11,8 +11,12 @@ export default function App() {
   const [title, setTitle] = useState("Untitled Document");
   const [collaborators, setCollaborators] = useState(1);
   const [socket, setSocket] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("Saved"); // "Saved" | "Saving..."
+  
   const editorRef = useRef(null);
   const isIncomingChange = useRef(false);
+  const saveTimeoutRef = useRef(null);
 
   const getDocumentId = () => {
     const path = window.location.pathname;
@@ -44,6 +48,7 @@ export default function App() {
 
     return () => {
       s.disconnect();
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
   }, []);
 
@@ -58,6 +63,7 @@ export default function App() {
         isIncomingChange.current = true;
         const rawContent = typeof doc === "string" ? doc : (doc?.data || "");
         editorRef.current.innerHTML = DOMPurify.sanitize(rawContent);
+        setSaveStatus("Saved");
       }
     });
 
@@ -79,7 +85,7 @@ export default function App() {
     };
   }, [socket]);
 
-  // 3. Emit Sanitized Changes
+  // 3. Emit Changes with Real-Time Sync & Debounced Cloud Save
   const handleInput = () => {
     if (isIncomingChange.current) {
       isIncomingChange.current = false;
@@ -88,8 +94,18 @@ export default function App() {
     if (!socket || !editorRef.current) return;
     
     const cleanHtml = DOMPurify.sanitize(editorRef.current.innerHTML);
+    
+    // Broadcast immediately so collaborators see typing in real time
     socket.emit("send-changes", cleanHtml);
-    socket.emit("save-document", cleanHtml);
+
+    // Set saving status and debounce database write (waits 800ms after you pause typing)
+    setSaveStatus("Saving...");
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+    saveTimeoutRef.current = setTimeout(() => {
+      socket.emit("save-document", cleanHtml);
+      setSaveStatus("Saved");
+    }, 800);
   };
 
   // 4. Sanitize Clipboard Paste Events Before Insertion
@@ -98,7 +114,6 @@ export default function App() {
     const clipboardHtml = e.clipboardData.getData("text/html");
     const clipboardText = e.clipboardData.getData("text/plain");
     
-    // Sanitize HTML if available, otherwise fallback to plain text
     const cleanContent = clipboardHtml 
       ? DOMPurify.sanitize(clipboardHtml) 
       : DOMPurify.sanitize(clipboardText);
@@ -107,14 +122,23 @@ export default function App() {
     handleInput();
   };
 
-  // 5. Formatting Actions
+  // 5. One-Click Copy Link Handler
+  const handleCopyLink = () => {
+    const cleanUrl = `${window.location.origin}/documents/${docId.current}`;
+    navigator.clipboard.writeText(cleanUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  // 6. Formatting Actions
   const format = (command, value = null) => {
     document.execCommand(command, false, value);
     if (editorRef.current) editorRef.current.focus();
     handleInput();
   };
 
-  // 6. File Export Actions
+  // 7. File Export Actions
   const exportFile = (formatType) => {
     if (!editorRef.current) return;
     const content = formatType === "txt" 
@@ -133,14 +157,35 @@ export default function App() {
   return (
     <div style={styles.container}>
       <header style={styles.topBar}>
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          style={styles.titleInput}
-          placeholder="Untitled Document"
-        />
+        <div style={styles.titleGroup}>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            style={styles.titleInput}
+            placeholder="Untitled Document"
+          />
+          <div style={styles.saveStatusBadge}>
+            <span style={{
+              ...styles.statusDot,
+              backgroundColor: saveStatus === "Saved" ? "#22c55e" : "#f59e0b"
+            }} />
+            {saveStatus === "Saved" ? "Saved to Cloud" : "Saving..."}
+          </div>
+        </div>
+
         <div style={styles.rightActions}>
+          <button 
+            style={{
+              ...styles.copyBtn,
+              backgroundColor: copied ? "#16a34a" : "#2563eb",
+              borderColor: copied ? "#22c55e" : "#3b82f6"
+            }} 
+            onClick={handleCopyLink}
+          >
+            {copied ? "✓ Copied!" : "📋 Copy Link"}
+          </button>
+
           <div style={styles.badge}>
             <span style={styles.dot}>●</span> {collaborators} Collaborator{collaborators > 1 ? "s" : ""}
           </div>
@@ -202,6 +247,11 @@ const styles = {
     backgroundColor: "#27272a",
     borderBottom: "1px solid #3f3f46",
   },
+  titleGroup: {
+    display: "flex",
+    alignItems: "center",
+    gap: "16px",
+  },
   titleInput: {
     backgroundColor: "transparent",
     border: "none",
@@ -209,12 +259,36 @@ const styles = {
     fontSize: "18px",
     fontWeight: "600",
     outline: "none",
-    width: "280px",
+    width: "240px",
+  },
+  saveStatusBadge: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "12px",
+    color: "#a1a1aa",
+    fontWeight: "500",
+  },
+  statusDot: {
+    width: "7px",
+    height: "7px",
+    borderRadius: "50%",
+    display: "inline-block",
   },
   rightActions: {
     display: "flex",
     alignItems: "center",
-    gap: "12px",
+    gap: "10px",
+  },
+  copyBtn: {
+    color: "#ffffff",
+    border: "1px solid",
+    borderRadius: "6px",
+    padding: "6px 14px",
+    fontSize: "13px",
+    cursor: "pointer",
+    fontWeight: "600",
+    transition: "background-color 0.2s ease, border-color 0.2s ease",
   },
   badge: {
     backgroundColor: "rgba(34, 197, 94, 0.15)",
