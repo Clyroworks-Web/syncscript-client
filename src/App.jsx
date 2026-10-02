@@ -2,9 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import DOMPurify from "dompurify";
 
-// Expose DOMPurify globally for browser console testing
 window.DOMPurify = DOMPurify;
-
 const SERVER_URL = "https://syncscript-server-0rc2.onrender.com";
 
 export default function App() {
@@ -12,26 +10,35 @@ export default function App() {
   const [collaborators, setCollaborators] = useState(1);
   const [socket, setSocket] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [saveStatus, setSaveStatus] = useState("Saved"); // "Saved" | "Saving..."
-  
+  const [saveStatus, setSaveStatus] = useState("Saved");
+  const [isLocked, setIsLocked] = useState(false);
+  const [isHost, setIsHost] = useState(false);
+
   const editorRef = useRef(null);
   const isIncomingChange = useRef(false);
   const saveTimeoutRef = useRef(null);
 
-  const getDocumentId = () => {
+  // 1. Get or Generate Room ID & Host Key
+  const getRoomData = () => {
     const path = window.location.pathname;
     const match = path.match(/\/documents\/([a-zA-Z0-9_-]+)/);
+    
     if (match && match[1]) {
-      return match[1];
+      const id = match[1];
+      const existingHostKey = localStorage.getItem(`syncscript_host_${id}`);
+      return { id, hostKey: existingHostKey || null };
     }
+
     const newId = crypto.randomUUID();
+    const newHostKey = crypto.randomUUID();
+    localStorage.setItem(`syncscript_host_${newId}`, newHostKey);
     window.history.replaceState(null, "", `/documents/${newId}`);
-    return newId;
+    return { id: newId, hostKey: newHostKey };
   };
 
-  const docId = useRef(getDocumentId());
+  const roomData = useRef(getRoomData());
 
-  // 1. Establish Socket Connection
+  // 2. Establish Socket Connection
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
@@ -52,11 +59,23 @@ export default function App() {
     };
   }, []);
 
-  // 2. Room Management & Incoming Real-time Updates (Sanitized)
+  // 3. Socket Event Handlers
   useEffect(() => {
     if (!socket) return;
 
-    socket.emit("get-document", docId.current);
+    socket.emit("get-document", {
+      docId: roomData.current.id,
+      hostKey: roomData.current.hostKey,
+    });
+
+    socket.on("room-init", (data) => {
+      setIsHost(data.isHost);
+      setIsLocked(data.isLocked);
+      if (data.isHost && data.assignedHostKey) {
+        localStorage.setItem(`syncscript_host_${roomData.current.id}`, data.assignedHostKey);
+        roomData.current.hostKey = data.assignedHostKey;
+      }
+    });
 
     socket.on("load-document", (doc) => {
       if (editorRef.current) {
@@ -74,31 +93,35 @@ export default function App() {
       }
     });
 
+    socket.on("lock-updated", (lockedState) => {
+      setIsLocked(lockedState);
+    });
+
     socket.on("user-count", (count) => {
       setCollaborators(count);
     });
 
     return () => {
+      socket.off("room-init");
       socket.off("load-document");
       socket.off("receive-changes");
+      socket.off("lock-updated");
       socket.off("user-count");
     };
   }, [socket]);
 
-  // 3. Emit Changes with Real-Time Sync & Debounced Cloud Save
+  const canEdit = !isLocked || isHost;
+
+  // 4. Input Handler with Debounced Auto-Save
   const handleInput = () => {
-    if (isIncomingChange.current) {
+    if (!canEdit || isIncomingChange.current || !socket || !editorRef.current) {
       isIncomingChange.current = false;
       return;
     }
-    if (!socket || !editorRef.current) return;
-    
+
     const cleanHtml = DOMPurify.sanitize(editorRef.current.innerHTML);
-    
-    // Broadcast immediately so collaborators see typing in real time
     socket.emit("send-changes", cleanHtml);
 
-    // Set saving status and debounce database write (waits 800ms after you pause typing)
     setSaveStatus("Saving...");
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
@@ -108,43 +131,57 @@ export default function App() {
     }, 800);
   };
 
-  // 4. Sanitize Clipboard Paste Events Before Insertion
+  // 5. Paste Sanitization
   const handlePaste = (e) => {
+    if (!canEdit) {
+      e.preventDefault();
+      return;
+    }
     e.preventDefault();
     const clipboardHtml = e.clipboardData.getData("text/html");
     const clipboardText = e.clipboardData.getData("text/plain");
-    
-    const cleanContent = clipboardHtml 
-      ? DOMPurify.sanitize(clipboardHtml) 
+
+    const cleanContent = clipboardHtml
+      ? DOMPurify.sanitize(clipboardHtml)
       : DOMPurify.sanitize(clipboardText);
 
     document.execCommand("insertHTML", false, cleanContent);
     handleInput();
   };
 
-  // 5. One-Click Copy Link Handler
+  // 6. Presenter Lock Toggle
+  const toggleLock = () => {
+    if (!isHost || !socket) return;
+    socket.emit("toggle-lock", {
+      docId: roomData.current.id,
+      hostKey: roomData.current.hostKey,
+    });
+  };
+
+  // 7. Copy Link Handler
   const handleCopyLink = () => {
-    const cleanUrl = `${window.location.origin}/documents/${docId.current}`;
+    const cleanUrl = `${window.location.origin}/documents/${roomData.current.id}`;
     navigator.clipboard.writeText(cleanUrl).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
   };
 
-  // 6. Formatting Actions
+  // 8. Toolbar Commands
   const format = (command, value = null) => {
+    if (!canEdit) return;
     document.execCommand(command, false, value);
     if (editorRef.current) editorRef.current.focus();
     handleInput();
   };
 
-  // 7. File Export Actions
+  // 9. Document Exporter
   const exportFile = (formatType) => {
     if (!editorRef.current) return;
-    const content = formatType === "txt" 
-      ? editorRef.current.innerText 
+    const content = formatType === "txt"
+      ? editorRef.current.innerText
       : DOMPurify.sanitize(editorRef.current.innerHTML);
-    
+
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -161,6 +198,7 @@ export default function App() {
           <input
             type="text"
             value={title}
+            disabled={!canEdit}
             onChange={(e) => setTitle(e.target.value)}
             style={styles.titleInput}
             placeholder="Untitled Document"
@@ -172,29 +210,72 @@ export default function App() {
             }} />
             {saveStatus === "Saved" ? "Saved to Cloud" : "Saving..."}
           </div>
+
+          {isLocked && (
+            <div style={isHost ? styles.presenterBadge : styles.lockedBadge}>
+              {isHost ? "🔒 Presenting (Viewers Locked)" : "🔒 Read Only (Presenter Mode)"}
+            </div>
+          )}
         </div>
 
         <div style={styles.rightActions}>
-          <button 
+          {isHost && (
+            <button
+              style={{
+                ...styles.btnBase,
+                backgroundColor: isLocked ? "#dc2626" : "#27272a",
+                borderColor: isLocked ? "#ef4444" : "#52525b",
+              }}
+              onClick={toggleLock}
+            >
+              {isLocked ? "🔓 Unlock Collaboration" : "🔒 Presenter Mode"}
+            </button>
+          )}
+
+          {/* Copy Link (Blue) */}
+          <button
             style={{
-              ...styles.copyBtn,
+              ...styles.btnBase,
               backgroundColor: copied ? "#16a34a" : "#2563eb",
-              borderColor: copied ? "#22c55e" : "#3b82f6"
-            }} 
+              borderColor: copied ? "#22c55e" : "#3b82f6",
+            }}
             onClick={handleCopyLink}
           >
             {copied ? "✓ Copied!" : "📋 Copy Link"}
           </button>
 
+          {/* Export TXT (Teal) */}
+          <button
+            style={{
+              ...styles.btnBase,
+              backgroundColor: "#0d9488",
+              borderColor: "#14b8a6",
+            }}
+            onClick={() => exportFile("txt")}
+          >
+            📄 Export TXT
+          </button>
+
+          {/* Export MD (Violet) */}
+          <button
+            style={{
+              ...styles.btnBase,
+              backgroundColor: "#7c3aed",
+              borderColor: "#8b5cf6",
+            }}
+            onClick={() => exportFile("md")}
+          >
+            📝 Export MD
+          </button>
+
           <div style={styles.badge}>
             <span style={styles.dot}>●</span> {collaborators} Collaborator{collaborators > 1 ? "s" : ""}
           </div>
-          <button style={styles.btn} onClick={() => exportFile("txt")}>Export TXT</button>
-          <button style={styles.btn} onClick={() => exportFile("md")}>Export MD</button>
         </div>
       </header>
 
-      <div style={styles.toolbar}>
+      {/* Formatting Toolbar */}
+      <div style={{ ...styles.toolbar, opacity: canEdit ? 1 : 0.45, pointerEvents: canEdit ? "auto" : "none" }}>
         <select
           style={styles.select}
           onChange={(e) => format("formatBlock", e.target.value)}
@@ -219,11 +300,15 @@ export default function App() {
       <main style={styles.editorWrapper}>
         <div
           ref={editorRef}
-          contentEditable
+          contentEditable={canEdit}
           suppressContentEditableWarning
           onInput={handleInput}
           onPaste={handlePaste}
-          style={styles.editorPage}
+          style={{
+            ...styles.editorPage,
+            cursor: canEdit ? "text" : "not-allowed",
+            backgroundColor: canEdit ? "#ffffff" : "#f8fafc",
+          }}
         />
       </main>
     </div>
@@ -250,7 +335,7 @@ const styles = {
   titleGroup: {
     display: "flex",
     alignItems: "center",
-    gap: "16px",
+    gap: "14px",
   },
   titleInput: {
     backgroundColor: "transparent",
@@ -259,7 +344,7 @@ const styles = {
     fontSize: "18px",
     fontWeight: "600",
     outline: "none",
-    width: "240px",
+    width: "220px",
   },
   saveStatusBadge: {
     display: "flex",
@@ -275,25 +360,46 @@ const styles = {
     borderRadius: "50%",
     display: "inline-block",
   },
+  presenterBadge: {
+    backgroundColor: "rgba(59, 130, 246, 0.15)",
+    color: "#60a5fa",
+    border: "1px solid rgba(59, 130, 246, 0.3)",
+    padding: "3px 10px",
+    borderRadius: "12px",
+    fontSize: "12px",
+    fontWeight: "600",
+  },
+  lockedBadge: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+    color: "#f87171",
+    border: "1px solid rgba(239, 68, 68, 0.3)",
+    padding: "3px 10px",
+    borderRadius: "12px",
+    fontSize: "12px",
+    fontWeight: "600",
+  },
   rightActions: {
     display: "flex",
     alignItems: "center",
-    gap: "10px",
+    gap: "8px",
   },
-  copyBtn: {
+  btnBase: {
     color: "#ffffff",
     border: "1px solid",
     borderRadius: "6px",
-    padding: "6px 14px",
+    padding: "6px 12px",
     fontSize: "13px",
     cursor: "pointer",
     fontWeight: "600",
     transition: "background-color 0.2s ease, border-color 0.2s ease",
+    display: "flex",
+    alignItems: "center",
+    gap: "5px",
   },
   badge: {
     backgroundColor: "rgba(34, 197, 94, 0.15)",
     color: "#4ade80",
-    padding: "6px 14px",
+    padding: "6px 12px",
     borderRadius: "20px",
     fontSize: "13px",
     fontWeight: "500",
@@ -301,20 +407,11 @@ const styles = {
     alignItems: "center",
     gap: "6px",
     border: "1px solid rgba(34, 197, 94, 0.3)",
+    marginLeft: "4px",
   },
   dot: {
     color: "#22c55e",
     fontSize: "12px",
-  },
-  btn: {
-    backgroundColor: "#3f3f46",
-    color: "#ffffff",
-    border: "1px solid #52525b",
-    borderRadius: "6px",
-    padding: "6px 14px",
-    fontSize: "13px",
-    cursor: "pointer",
-    fontWeight: "500",
   },
   toolbar: {
     display: "flex",
@@ -323,6 +420,7 @@ const styles = {
     padding: "8px 24px",
     backgroundColor: "#202023",
     borderBottom: "1px solid #3f3f46",
+    transition: "opacity 0.2s ease",
   },
   select: {
     backgroundColor: "#27272a",
@@ -359,13 +457,13 @@ const styles = {
   editorPage: {
     width: "850px",
     minHeight: "1100px",
-    backgroundColor: "#ffffff",
-    color: "#18181b",
     padding: "60px 80px",
     boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.5)",
     borderRadius: "4px",
     outline: "none",
     fontSize: "16px",
     lineHeight: "1.6",
+    color: "#18181b",
+    transition: "background-color 0.2s ease",
   },
 };
