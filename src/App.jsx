@@ -52,18 +52,70 @@ export default function App() {
   );
 
   // 1. Connect to WebSocket Server
+ // Unified Socket Lifecycle (Reconnection-Resilient)
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
     });
     setSocket(s);
 
+    // Guaranteed room join on initial connection AND automatic reconnects
     s.on("connect", () => {
       console.log("Connected to live server with ID:", s.id);
+      s.emit("get-document", {
+        docId: roomData.current.id,
+        hostKey: roomData.current.hostKey,
+      });
     });
 
     s.on("connect_error", (error) => {
       console.error("Socket connection error:", error.message);
+    });
+
+    s.on("room-init", (data) => {
+      setIsHost(data.isHost);
+      setIsLocked(data.isLocked);
+      if (data.isHost && data.assignedHostKey) {
+        localStorage.setItem(`syncscript_host_${roomData.current.id}`, data.assignedHostKey);
+        roomData.current.hostKey = data.assignedHostKey;
+      }
+    });
+
+    s.on("load-document", (docContent) => {
+      if (editorRef.current) {
+        const raw = typeof docContent === "string" ? docContent : (docContent?.data || "");
+        editorRef.current.innerHTML = DOMPurify.sanitize(raw);
+        setSaveStatus("Saved");
+      }
+    });
+
+    s.on("receive-changes", (incomingHtml) => {
+      if (editorRef.current) {
+        editorRef.current.innerHTML = DOMPurify.sanitize(incomingHtml);
+      }
+    });
+
+    s.on("lock-updated", (lockedState) => {
+      setIsLocked(lockedState);
+    });
+
+    s.on("user-count", (count) => {
+      setCollaborators(count);
+    });
+
+    s.on("cursor-update", ({ socketId, x, y, color }) => {
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [socketId]: { x, y, color },
+      }));
+    });
+
+    s.on("cursor-remove", (socketId) => {
+      setRemoteCursors((prev) => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
     });
 
     return () => {
@@ -71,7 +123,6 @@ export default function App() {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
   }, []);
-
   // 2. Room Management & Events
   useEffect(() => {
     if (!socket) return;
