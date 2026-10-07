@@ -30,9 +30,7 @@ export default function App() {
     hostKey: null,
   });
 
-  // ----------------------------------------------------
-  // 1. Primary Socket Connection & Cursor Listeners
-  // ----------------------------------------------------
+  // 1. Primary Socket Connection & Live Cursor Listeners
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
@@ -61,9 +59,7 @@ export default function App() {
     };
   }, []);
 
-  // ----------------------------------------------------
-  // 2. Room Management, Document Sync & Kill-Switch
-  // ----------------------------------------------------
+  // 2. Room Management, Document Sync & Termination Handling
   useEffect(() => {
     if (!socket) return;
 
@@ -71,7 +67,7 @@ export default function App() {
     const storedHostKey = localStorage.getItem(`syncscript_host_${docId}`);
     roomData.current.hostKey = storedHostKey;
 
-    // Join room and request latest document content
+    // Request document state and claim/verify host privileges
     socket.emit("get-document", {
       docId,
       hostKey: storedHostKey,
@@ -109,7 +105,7 @@ export default function App() {
       setUserCount(count);
     });
 
-    // 👉 Kill-switch listener: executes when the host ends the session
+    // Kill switch listener: kicks participants and purges host credentials
     socket.on("meeting-terminated", () => {
       alert("The host has ended this meeting session.");
       if (roomData.current?.id) {
@@ -128,19 +124,17 @@ export default function App() {
     };
   }, [socket]);
 
-  // ----------------------------------------------------
-  // 3. User Action Handlers
-  // ----------------------------------------------------
+  // 3. User Handlers
   const handleInput = () => {
     if (isLocked && !isHost) return;
     if (!socket || !editorRef.current) return;
 
     const content = editorRef.current.innerHTML;
 
-    // Broadcast instant keystroke delta
+    // Instant delta broadcast to participants
     socket.emit("send-changes", content);
 
-    // Debounced database save (1000ms idle threshold)
+    // Debounced database write (1000ms idle threshold)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       socket.emit("save-document", content);
@@ -166,10 +160,9 @@ export default function App() {
     });
   };
 
-  // 👉 Host button click handler: signals server to wipe doc and disconnect clients
   const handleEndMeeting = () => {
     const confirmEnd = window.confirm(
-      "Are you sure you want to end this meeting for everyone? The session will terminate."
+      "Are you sure you want to end this meeting for everyone? The document session will be terminated."
     );
 
     if (confirmEnd && socket) {
@@ -206,12 +199,10 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // ----------------------------------------------------
-  // 4. Render UI
-  // ----------------------------------------------------
+  // 4. Component Layout
   return (
     <div className="app-container" onMouseMove={handleMouseMove}>
-      {/* Remote Collaborator Cursors Overlay */}
+      {/* Remote Collaborator Cursors */}
       {Object.entries(remoteCursors).map(([id, cursor]) => (
         <div
           key={id}
@@ -235,7 +226,7 @@ export default function App() {
         </div>
       ))}
 
-      {/* Top Navigation Bar */}
+      {/* Navigation Header */}
       <header className="navbar">
         <div className="navbar-brand">
           <span className="brand-logo">⚡</span>
@@ -254,7 +245,7 @@ export default function App() {
             Export MD
           </button>
 
-          {/* Host Controls */}
+          {/* Host-only Action Buttons */}
           {isHost && (
             <>
               <button
@@ -285,7 +276,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Workspace / Document Area */}
+      {/* Editor Surface */}
       <main className="editor-container">
         {isLocked && !isHost && (
           <div className="lock-banner">
