@@ -67,7 +67,6 @@ export default function App() {
     const storedHostKey = localStorage.getItem(`syncscript_host_${docId}`);
     roomData.current.hostKey = storedHostKey;
 
-    // Request document state and claim/verify host privileges
     socket.emit("get-document", {
       docId,
       hostKey: storedHostKey,
@@ -105,7 +104,7 @@ export default function App() {
       setUserCount(count);
     });
 
-    // Kill switch listener: kicks participants and purges host credentials
+    // Kill switch listener: triggers when host ends the session
     socket.on("meeting-terminated", () => {
       alert("The host has ended this meeting session.");
       if (roomData.current?.id) {
@@ -131,10 +130,10 @@ export default function App() {
 
     const content = editorRef.current.innerHTML;
 
-    // Instant delta broadcast to participants
+    // Real-time delta broadcast to participants
     socket.emit("send-changes", content);
 
-    // Debounced database write (1000ms idle threshold)
+    // Debounced save to MongoDB Atlas (1000ms idle threshold)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       socket.emit("save-document", content);
@@ -162,7 +161,7 @@ export default function App() {
 
   const handleEndMeeting = () => {
     const confirmEnd = window.confirm(
-      "Are you sure you want to end this meeting for everyone? The document session will be terminated."
+      "Are you sure you want to end this meeting for everyone? The session will terminate."
     );
 
     if (confirmEnd && socket) {
@@ -199,10 +198,10 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // 4. Component Layout
+  // 4. UI Layout
   return (
     <div className="app-container" onMouseMove={handleMouseMove}>
-      {/* Remote Collaborator Cursors */}
+      {/* Remote Collaborator Cursors Overlay */}
       {Object.entries(remoteCursors).map(([id, cursor]) => (
         <div
           key={id}
@@ -226,7 +225,7 @@ export default function App() {
         </div>
       ))}
 
-      {/* Navigation Header */}
+      {/* Top Navbar */}
       <header className="navbar">
         <div className="navbar-brand">
           <span className="brand-logo">⚡</span>
@@ -245,7 +244,7 @@ export default function App() {
             Export MD
           </button>
 
-          {/* Host-only Action Buttons */}
+          {/* Host Exclusive Controls */}
           {isHost && (
             <>
               <button
