@@ -10,12 +10,13 @@ export default function App() {
   const [isMeetingEnded, setIsMeetingEnded] = useState(false);
   const [userCount, setUserCount] = useState(1);
   const [remoteCursors, setRemoteCursors] = useState({});
-  const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("Saved to Cloud • Active");
 
   const editorRef = useRef(null);
   const saveTimeoutRef = useRef(null);
 
-  // Initialize room ID and local host credential
+  // Initialize Room ID and Host State
   const roomData = useRef((() => {
     const pathParts = window.location.pathname.split("/").filter(Boolean);
     const existingId = pathParts[pathParts.length - 1];
@@ -39,7 +40,7 @@ export default function App() {
 
   const [isHost, setIsHost] = useState(roomData.current.isOwner);
 
-  // 1. Establish Socket Connection
+  // 1. Socket Setup
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
@@ -47,10 +48,10 @@ export default function App() {
     });
     setSocket(s);
 
-    s.on("cursor-update", ({ socketId, x, y, color }) => {
+    s.on("cursor-update", ({ socketId, x, y, name, color }) => {
       setRemoteCursors((prev) => ({
         ...prev,
-        [socketId]: { x, y, color },
+        [socketId]: { x, y, name: name || "Collaborator", color: color || "#3B82F6" },
       }));
     });
 
@@ -68,30 +69,21 @@ export default function App() {
     };
   }, []);
 
-  // 2. Room State Synchronization & Meeting End Enforcement
+  // 2. Room State & Meeting End Handlers
   useEffect(() => {
     if (!socket) return;
-
     const { id: docId, hostKey } = roomData.current;
 
-    socket.emit("get-document", {
-      docId,
-      hostKey,
-    });
+    socket.emit("get-document", { docId, hostKey });
 
     socket.on("room-init", (data) => {
-      if (data && typeof data.isHost === "boolean") {
-        setIsHost(data.isHost);
-      }
-      if (data && typeof data.isLocked === "boolean") {
-        setIsLocked(data.isLocked);
-      }
+      if (data && typeof data.isHost === "boolean") setIsHost(data.isHost);
+      if (data && typeof data.isLocked === "boolean") setIsLocked(data.isLocked);
     });
 
     socket.on("load-document", (docContent) => {
       if (editorRef.current) {
-        const raw =
-          typeof docContent === "string" ? docContent : docContent?.data || "";
+        const raw = typeof docContent === "string" ? docContent : docContent?.data || "";
         editorRef.current.innerHTML = raw;
       }
     });
@@ -103,18 +95,14 @@ export default function App() {
       }
     });
 
-    socket.on("lock-updated", (lockedStatus) => {
-      setIsLocked(lockedStatus);
-    });
+    socket.on("lock-updated", (status) => setIsLocked(status));
+    socket.on("user-count", (count) => setUserCount(count));
 
-    socket.on("user-count", (count) => {
-      setUserCount(count);
-    });
-
-    // Enforce permanent read-only lock when host ends session
+    // Hard lock on termination
     socket.on("meeting-terminated", () => {
       setIsMeetingEnded(true);
       setIsLocked(true);
+      setSaveStatus("Session Terminated");
       if (editorRef.current) {
         editorRef.current.contentEditable = "false";
       }
@@ -133,40 +121,45 @@ export default function App() {
     };
   }, [socket, isMeetingEnded]);
 
-  // 3. User Handlers
+  // Document Editing
   const handleInput = () => {
     if (isMeetingEnded || (isLocked && !isHost)) return;
     if (!socket || !editorRef.current) return;
 
+    setSaveStatus("Saving changes...");
     const content = editorRef.current.innerHTML;
     socket.emit("send-changes", content);
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       socket.emit("save-document", content);
+      setSaveStatus("Saved to Cloud • Active");
     }, 1000);
   };
 
+  // Block any keyboard interaction if meeting has ended or locked
   const handleKeyDown = (e) => {
-    // Hard-block all typing, deletion, or shortcuts if session has ended
     if (isMeetingEnded || (isLocked && !isHost)) {
       e.preventDefault();
     }
   };
 
+  // Live Cursor Broadcast
   const handleMouseMove = (e) => {
     if (!socket || isMeetingEnded) return;
     socket.emit("cursor-move", {
       x: e.clientX,
       y: e.clientY,
-      color: isHost ? "#3b82f6" : "#10b981",
+      name: isHost ? "Host" : "Guest",
+      color: isHost ? "#3B6B96" : "#48BB78",
     });
   };
 
+  // Actions
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const handleToggleLock = () => {
@@ -180,9 +173,8 @@ export default function App() {
 
   const handleEndMeeting = () => {
     const confirmEnd = window.confirm(
-      "Are you sure you want to end this meeting for everyone? The document will be permanently locked and wiped."
+      "Are you sure you want to end this meeting for everyone? The document will be permanently locked."
     );
-
     if (confirmEnd) {
       if (socket) {
         socket.emit("end-meeting", {
@@ -192,6 +184,7 @@ export default function App() {
       }
       setIsMeetingEnded(true);
       setIsLocked(true);
+      setSaveStatus("Session Terminated");
       if (editorRef.current) {
         editorRef.current.contentEditable = "false";
       }
@@ -223,22 +216,29 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Formatting actions
+  const formatText = (cmd, val = null) => {
+    if (isMeetingEnded || (isLocked && !isHost)) return;
+    document.execCommand(cmd, false, val);
+    if (editorRef.current) editorRef.current.focus();
+  };
+
   const isEditable = !isMeetingEnded && (!isLocked || isHost);
 
   return (
     <div
+      onMouseMove={handleMouseMove}
       style={{
         display: "flex",
         flexDirection: "column",
-        minHeight: "100vh",
-        backgroundColor: "#0d0e15",
-        color: "#e2e8f0",
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        height: "100vh",
+        backgroundColor: "#f4f5f7",
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        color: "#2d3748",
+        overflow: "hidden",
       }}
-      onMouseMove={handleMouseMove}
     >
-      {/* Remote Collaborators Cursors */}
+      {/* Live Remote Multiplayer Cursors */}
       {!isMeetingEnded &&
         Object.entries(remoteCursors).map(([id, cursor]) => (
           <div
@@ -249,278 +249,521 @@ export default function App() {
               top: `${cursor.y}px`,
               pointerEvents: "none",
               zIndex: 9999,
-              transition: "left 0.08s linear, top 0.08s linear",
+              transition: "left 0.08s ease-out, top 0.08s ease-out",
             }}
           >
-            <div
+            <svg width="18" height="18" viewBox="0 0 24 24" fill={cursor.color}>
+              <path d="M3 3l7 18 3-7 7-3L3 3z" />
+            </svg>
+            <span
               style={{
-                width: "12px",
-                height: "12px",
-                backgroundColor: cursor.color || "#10b981",
-                borderRadius: "50%",
-                boxShadow: "0 0 8px rgba(0,0,0,0.5)",
+                marginLeft: "8px",
+                backgroundColor: cursor.color,
+                color: "#ffffff",
+                fontSize: "11px",
+                fontWeight: "600",
+                padding: "2px 8px",
+                borderRadius: "12px",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.15)",
+                whiteSpace: "nowrap",
               }}
-            />
+            >
+              {cursor.name}
+            </span>
           </div>
         ))}
 
-      {/* Top Collaborative Navbar */}
+      {/* TOP HEADER */}
       <header
         style={{
+          height: "60px",
+          backgroundColor: "#ffffff",
+          borderBottom: "1px solid #e2e8f0",
           display: "flex",
-          justifyContent: "space-between",
           alignItems: "center",
-          padding: "12px 24px",
-          backgroundColor: "#161722",
-          borderBottom: "1px solid #232536",
-          position: "sticky",
-          top: 0,
-          zIndex: 100,
+          justifyContent: "space-between",
+          padding: "0 24px",
+          flexShrink: 0,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <span
+        {/* Left Header Pills */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div
             style={{
-              fontSize: "1.25rem",
-              fontWeight: "700",
-              color: "#60a5fa",
-              letterSpacing: "-0.5px",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              backgroundColor: "#ffffff",
+              border: "1.5px solid #d1d5db",
+              borderRadius: "8px",
+              padding: "5px 12px",
+              fontSize: "13px",
+              fontWeight: "600",
+              color: "#374151",
+            }}
+          >
+            <span>Room ID: {roomData.current.id.slice(0, 8)}...</span>
+            <button
+              onClick={handleCopyLink}
+              title="Copy Room Link"
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "2px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              📋
+            </button>
+          </div>
+
+          <div
+            style={{
+              backgroundColor: "#e6fffa",
+              border: "1.5px solid #81e6d9",
+              color: "#234e52",
+              padding: "5px 12px",
+              borderRadius: "8px",
+              fontSize: "13px",
+              fontWeight: "600",
               display: "flex",
               alignItems: "center",
               gap: "6px",
             }}
           >
-            ⚡ SyncScript
-          </span>
-
-          <span
-            style={{
-              fontSize: "0.82rem",
-              backgroundColor: "#202234",
-              border: "1px solid #2e3047",
-              padding: "4px 10px",
-              borderRadius: "6px",
-              color: "#94a3b8",
-              fontFamily: "monospace",
-            }}
-          >
-            Room: {roomData.current.id.slice(0, 8)}...
-          </span>
-
-          <span
-            style={{
-              fontSize: "0.82rem",
-              backgroundColor: "#1a2c26",
-              border: "1px solid #22493d",
-              padding: "4px 10px",
-              borderRadius: "6px",
-              color: "#34d399",
-              fontWeight: "500",
-            }}
-          >
-            👥 {userCount} online
-          </span>
-
-          <span
-            style={{
-              fontSize: "0.82rem",
-              backgroundColor: isHost ? "#1e293b" : "#1f2937",
-              border: `1px solid ${isHost ? "#3b82f6" : "#4b5563"}`,
-              color: isHost ? "#93c5fd" : "#d1d5db",
-              padding: "4px 10px",
-              borderRadius: "6px",
-              fontWeight: "600",
-            }}
-          >
-            {isHost ? "👑 Host" : "👤 Collaborator"}
-          </span>
+            <span>👥 {userCount} Online</span>
+          </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Center Logo */}
+        <div
+          style={{
+            fontSize: "20px",
+            fontWeight: "800",
+            color: "#1e293b",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+        >
+          <span style={{ color: "#0284c7" }}>⚡</span> SyncScript
+        </div>
+
+        {/* Right Cloud Status Pill */}
+        <div
+          style={{
+            backgroundColor: "#f8fafc",
+            border: "1.5px solid #e2e8f0",
+            color: "#475569",
+            padding: "5px 14px",
+            borderRadius: "8px",
+            fontSize: "13px",
+            fontWeight: "500",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+        >
+          <span>☁️</span>
+          <span>
+            {saveStatus.includes("Active") ? (
+              <>
+                Saved to Cloud • <strong style={{ color: "#16a34a" }}>Active</strong>
+              </>
+            ) : (
+              saveStatus
+            )}
+          </span>
+        </div>
+      </header>
+
+      {/* WORKSPACE BODY */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* LEFT SIDEBAR (No 'Control Panel' text, matching colors) */}
+        <aside
+          style={{
+            width: "200px",
+            backgroundColor: "#ffffff",
+            borderRight: "1px solid #e2e8f0",
+            padding: "20px 14px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+            flexShrink: 0,
+          }}
+        >
+          {/* HOST / GUEST BADGE */}
+          <div
+            style={{
+              backgroundColor: isHost ? "#426b8f" : "#e2e8f0",
+              color: isHost ? "#ffffff" : "#4a5568",
+              padding: "10px",
+              borderRadius: "8px",
+              fontWeight: "700",
+              fontSize: "13px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+            }}
+          >
+            {isHost ? "👑 HOST" : "👤 GUEST"}
+          </div>
+
+          {/* LOCK ROOM */}
+          {isHost && (
+            <button
+              onClick={handleToggleLock}
+              disabled={isMeetingEnded}
+              style={{
+                backgroundColor: isLocked ? "#fef3c7" : "#fffdf0",
+                border: "1.5px solid #d4a346",
+                color: "#8f6517",
+                padding: "10px",
+                borderRadius: "8px",
+                fontWeight: "700",
+                fontSize: "13px",
+                cursor: isMeetingEnded ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+              }}
+            >
+              {isLocked ? "🔒 LOCKED" : "🔓 LOCK ROOM"}
+            </button>
+          )}
+
+          {/* COPY LINK */}
           <button
             onClick={handleCopyLink}
             style={{
-              backgroundColor: copied ? "#059669" : "#222538",
-              color: "#ffffff",
-              border: "1px solid #333752",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              backgroundColor: "#eef4fb",
+              border: "1.5px solid #b7d3f2",
+              color: "#2c649b",
+              padding: "10px",
+              borderRadius: "8px",
+              fontWeight: "600",
+              fontSize: "13px",
               cursor: "pointer",
-              fontSize: "0.85rem",
-              fontWeight: "500",
-              transition: "background-color 0.2s",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
             }}
           >
-            {copied ? "✅ Copied!" : "📋 Copy Link"}
+            {copiedLink ? "✅ Copied!" : "📋 Copy Link"}
           </button>
 
+          {/* EXPORT TXT (Soft Pastel Green) */}
           <button
             onClick={handleExportTxt}
             style={{
-              backgroundColor: "#222538",
-              color: "#cbd5e1",
-              border: "1px solid #333752",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              backgroundColor: "#eef8f2",
+              border: "1.5px solid #a8ddc0",
+              color: "#28734a",
+              padding: "10px",
+              borderRadius: "8px",
+              fontWeight: "600",
+              fontSize: "13px",
               cursor: "pointer",
-              fontSize: "0.85rem",
-              fontWeight: "500",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
             }}
           >
-            Export TXT
+            📄 Export TXT
           </button>
 
+          {/* EXPORT MD (Soft Pastel Purple) */}
           <button
             onClick={handleExportMd}
             style={{
-              backgroundColor: "#222538",
-              color: "#cbd5e1",
-              border: "1px solid #333752",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              backgroundColor: "#f5effb",
+              border: "1.5px solid #d0b8ed",
+              color: "#623696",
+              padding: "10px",
+              borderRadius: "8px",
+              fontWeight: "600",
+              fontSize: "13px",
               cursor: "pointer",
-              fontSize: "0.85rem",
-              fontWeight: "500",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
             }}
           >
-            Export MD
+            📝 Export MD
           </button>
 
-          {/* Host Exclusive Actions */}
-          {isHost && !isMeetingEnded && (
-            <>
-              <button
-                onClick={handleToggleLock}
-                style={{
-                  backgroundColor: isLocked ? "#d97706" : "#222538",
-                  color: "#ffffff",
-                  border: "1px solid #4a4e70",
-                  padding: "6px 14px",
-                  borderRadius: "6px",
-                  cursor: "pointer",
-                  fontSize: "0.85rem",
-                  fontWeight: "600",
-                }}
-              >
-                {isLocked ? "🔒 Unlock Room" : "🔓 Lock Room"}
-              </button>
+          {/* PUSH TO BOTTOM */}
+          <div style={{ flex: 1 }} />
 
+          {/* END MEETING */}
+          {isHost && (
+            <button
+              onClick={handleEndMeeting}
+              disabled={isMeetingEnded}
+              style={{
+                backgroundColor: isMeetingEnded ? "#f3f4f6" : "#fdecec",
+                border: `1.5px solid ${isMeetingEnded ? "#d1d5db" : "#f2aeae"}`,
+                color: isMeetingEnded ? "#9ca3af" : "#a62828",
+                padding: "10px",
+                borderRadius: "8px",
+                fontWeight: "700",
+                fontSize: "13px",
+                cursor: isMeetingEnded ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+              }}
+            >
+              🛑 {isMeetingEnded ? "Meeting Ended" : "End Meeting"}
+            </button>
+          )}
+        </aside>
+
+        {/* MAIN COLLABORATIVE AREA SHEET */}
+        <main
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            padding: "20px 24px 16px 24px",
+            overflowY: "auto",
+            position: "relative",
+          }}
+        >
+          {/* TERMINATION BANNER */}
+          {isMeetingEnded && (
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "880px",
+                backgroundColor: "#fdecec",
+                border: "1.5px solid #f2aeae",
+                color: "#991b1b",
+                padding: "12px 18px",
+                borderRadius: "8px",
+                marginBottom: "12px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontWeight: "600",
+                fontSize: "13px",
+              }}
+            >
+              <span>🛑 Meeting has ended. Pad editing is permanently disabled for all participants.</span>
               <button
-                onClick={handleEndMeeting}
+                onClick={() => (window.location.href = "/")}
                 style={{
-                  backgroundColor: "#dc2626",
+                  backgroundColor: "#a62828",
                   color: "#ffffff",
                   border: "none",
                   padding: "6px 14px",
                   borderRadius: "6px",
                   cursor: "pointer",
-                  fontSize: "0.85rem",
-                  fontWeight: "600",
+                  fontWeight: "700",
+                  fontSize: "12px",
                 }}
               >
-                End Meeting
+                New Meeting
               </button>
-            </>
+            </div>
           )}
-        </div>
-      </header>
 
-      {/* Main Workspace Sheet Surface */}
-      <main
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          padding: "36px 16px",
-          backgroundColor: "#0d0e15",
-        }}
-      >
-        {/* Meeting Ended Alert Banner */}
-        {isMeetingEnded && (
+          {/* COLLABORATIVE PAD CARD */}
           <div
             style={{
               width: "100%",
-              maxWidth: "850px",
-              backgroundColor: "#450a0a",
-              border: "1px solid #991b1b",
-              color: "#fecaca",
-              padding: "14px 20px",
-              borderRadius: "8px",
-              marginBottom: "20px",
+              maxWidth: "880px",
+              backgroundColor: "#faf7f2",
+              border: `1px solid ${isMeetingEnded ? "#f2aeae" : "#e8e3da"}`,
+              borderRadius: "10px",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.03)",
               display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+              flexDirection: "column",
+              flex: 1,
+              minHeight: "70vh",
+              marginBottom: "80px",
             }}
           >
-            <div>
-              <strong>🛑 Meeting Terminated:</strong> The host has ended this
-              session. Editing is permanently disabled on this pad.
-            </div>
-            <button
-              onClick={() => (window.location.href = "/")}
+            {/* Pad Card Title */}
+            <div
               style={{
-                backgroundColor: "#dc2626",
-                color: "#ffffff",
-                border: "none",
-                padding: "6px 14px",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontWeight: "600",
-                fontSize: "0.85rem",
+                textAlign: "center",
+                padding: "8px 0",
+                fontSize: "12px",
+                fontWeight: "700",
+                letterSpacing: "0.8px",
+                color: "#78716c",
+                borderBottom: "1px solid #ede8e1",
               }}
             >
-              Start New Meeting
-            </button>
-          </div>
-        )}
+              COLLABORATIVE AREA
+            </div>
 
-        {/* Lock Notice Banner */}
-        {isLocked && !isHost && !isMeetingEnded && (
+            {/* Editable Content Area */}
+            <div
+              ref={editorRef}
+              contentEditable={isEditable}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              suppressContentEditableWarning={true}
+              style={{
+                flex: 1,
+                padding: "24px 32px",
+                fontSize: "15px",
+                lineHeight: "1.75",
+                outline: "none",
+                color: "#1c1917",
+                cursor: !isEditable ? "not-allowed" : "text",
+                opacity: isMeetingEnded ? 0.65 : 1,
+              }}
+              data-placeholder="...Collaborative notes here..."
+            />
+          </div>
+
+          {/* BOTTOM FLOATING DOCK */}
           <div
             style={{
-              width: "100%",
-              maxWidth: "850px",
-              backgroundColor: "#451a03",
-              border: "1px solid #92400e",
-              color: "#fef3c7",
-              padding: "10px 18px",
-              borderRadius: "8px",
-              marginBottom: "16px",
-              fontSize: "0.9rem",
+              position: "fixed",
+              bottom: "16px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "4px",
+              zIndex: 50,
             }}
           >
-            ⚠️ The host has locked this document. It is currently read-only.
-          </div>
-        )}
+            <span
+              style={{
+                fontSize: "11px",
+                fontWeight: "700",
+                letterSpacing: "0.6px",
+                color: "#64748b",
+              }}
+            >
+              FONT & STYLING
+            </span>
 
-        {/* Collaborative Document Pad Canvas */}
-        <div
-          ref={editorRef}
-          contentEditable={isEditable}
-          onInput={handleInput}
-          onKeyDown={handleKeyDown}
-          suppressContentEditableWarning={true}
-          style={{
-            width: "100%",
-            maxWidth: "850px",
-            minHeight: "78vh",
-            backgroundColor: "#161722",
-            border: `1px solid ${isMeetingEnded ? "#7f1d1d" : "#232536"}`,
-            borderRadius: "10px",
-            padding: "40px 48px",
-            fontSize: "1.05rem",
-            lineHeight: "1.75",
-            outline: "none",
-            boxShadow: "0 10px 30px rgba(0, 0, 0, 0.4)",
-            cursor: !isEditable ? "not-allowed" : "text",
-            opacity: isMeetingEnded ? 0.7 : 1,
-            color: "#f1f5f9",
-          }}
-          placeholder="Start typing your collaborative notes here..."
-        />
-      </main>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                backgroundColor: "#ffffff",
+                border: "1.5px solid #d1d5db",
+                borderRadius: "10px",
+                padding: "6px 14px",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+              }}
+            >
+              <select
+                onChange={(e) => formatText("fontName", e.target.value)}
+                disabled={!isEditable}
+                style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "6px",
+                  padding: "4px 8px",
+                  fontSize: "12px",
+                  outline: "none",
+                  cursor: "pointer",
+                }}
+              >
+                <option value="Sans-Serif">Sans</option>
+                <option value="Georgia">Serif</option>
+                <option value="Courier New">Mono</option>
+              </select>
+
+              <div style={{ width: "1px", height: "18px", backgroundColor: "#e2e8f0" }} />
+
+              <button
+                onClick={() => formatText("bold")}
+                disabled={!isEditable}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontWeight: "800",
+                  fontSize: "14px",
+                  cursor: "pointer",
+                  padding: "2px 6px",
+                }}
+              >
+                B
+              </button>
+
+              <button
+                onClick={() => formatText("italic")}
+                disabled={!isEditable}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontStyle: "italic",
+                  fontSize: "14px",
+                  cursor: "pointer",
+                  padding: "2px 6px",
+                }}
+              >
+                I
+              </button>
+
+              <button
+                onClick={() => formatText("underline")}
+                disabled={!isEditable}
+                style={{
+                  background: "none",
+                  border: "none",
+                  textDecoration: "underline",
+                  fontSize: "14px",
+                  cursor: "pointer",
+                  padding: "2px 6px",
+                }}
+              >
+                U
+              </button>
+
+              <button
+                onClick={() => formatText("insertUnorderedList")}
+                disabled={!isEditable}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "14px",
+                  cursor: "pointer",
+                  padding: "2px 6px",
+                }}
+              >
+                ≡
+              </button>
+
+              <div style={{ width: "1px", height: "18px", backgroundColor: "#e2e8f0" }} />
+
+              <input
+                type="color"
+                defaultValue="#000000"
+                onChange={(e) => formatText("foreColor", e.target.value)}
+                disabled={!isEditable}
+                title="Pick Text Color"
+                style={{
+                  width: "22px",
+                  height: "22px",
+                  border: "none",
+                  cursor: "pointer",
+                  borderRadius: "4px",
+                  backgroundColor: "transparent",
+                }}
+              />
+            </div>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }
