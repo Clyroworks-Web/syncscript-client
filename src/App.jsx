@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
-import "./App.css";
 
 const SERVER_URL =
   import.meta.env.VITE_SERVER_URL || "https://syncscript-server-0rc2.onrender.com";
@@ -8,13 +7,15 @@ const SERVER_URL =
 export default function App() {
   const [socket, setSocket] = useState(null);
   const [isLocked, setIsLocked] = useState(false);
+  const [isMeetingEnded, setIsMeetingEnded] = useState(false);
   const [userCount, setUserCount] = useState(1);
   const [remoteCursors, setRemoteCursors] = useState({});
+  const [copied, setCopied] = useState(false);
 
   const editorRef = useRef(null);
   const saveTimeoutRef = useRef(null);
 
-  // Determine room ID and host credentials immediately on page load
+  // Initialize room ID and local host credential
   const roomData = useRef((() => {
     const pathParts = window.location.pathname.split("/").filter(Boolean);
     const existingId = pathParts[pathParts.length - 1];
@@ -26,7 +27,7 @@ export default function App() {
     }
 
     let hostKey = localStorage.getItem(`syncscript_host_${id}`);
-    let isOwner = Boolean(hostKey) || isNew;
+    const isOwner = Boolean(hostKey) || isNew;
 
     if (isNew && !hostKey) {
       hostKey = crypto.randomUUID();
@@ -36,7 +37,6 @@ export default function App() {
     return { id, hostKey, isOwner };
   })());
 
-  // Instant host state assignment (no waiting for backend signal)
   const [isHost, setIsHost] = useState(roomData.current.isOwner);
 
   // 1. Establish Socket Connection
@@ -68,7 +68,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Room Synchronization & Event Handlers
+  // 2. Room State Synchronization & Meeting End Enforcement
   useEffect(() => {
     if (!socket) return;
 
@@ -97,6 +97,7 @@ export default function App() {
     });
 
     socket.on("receive-changes", (delta) => {
+      if (isMeetingEnded) return;
       if (editorRef.current && delta !== editorRef.current.innerHTML) {
         editorRef.current.innerHTML = delta;
       }
@@ -110,12 +111,16 @@ export default function App() {
       setUserCount(count);
     });
 
+    // Enforce permanent read-only lock when host ends session
     socket.on("meeting-terminated", () => {
-      alert("The host has ended this meeting session.");
+      setIsMeetingEnded(true);
+      setIsLocked(true);
+      if (editorRef.current) {
+        editorRef.current.contentEditable = "false";
+      }
       if (roomData.current?.id) {
         localStorage.removeItem(`syncscript_host_${roomData.current.id}`);
       }
-      window.location.href = "/";
     });
 
     return () => {
@@ -126,11 +131,11 @@ export default function App() {
       socket.off("user-count");
       socket.off("meeting-terminated");
     };
-  }, [socket]);
+  }, [socket, isMeetingEnded]);
 
-  // 3. Document Editing & Host Actions
+  // 3. User Handlers
   const handleInput = () => {
-    if (isLocked && !isHost) return;
+    if (isMeetingEnded || (isLocked && !isHost)) return;
     if (!socket || !editorRef.current) return;
 
     const content = editorRef.current.innerHTML;
@@ -142,8 +147,15 @@ export default function App() {
     }, 1000);
   };
 
+  const handleKeyDown = (e) => {
+    // Hard-block all typing, deletion, or shortcuts if session has ended
+    if (isMeetingEnded || (isLocked && !isHost)) {
+      e.preventDefault();
+    }
+  };
+
   const handleMouseMove = (e) => {
-    if (!socket) return;
+    if (!socket || isMeetingEnded) return;
     socket.emit("cursor-move", {
       x: e.clientX,
       y: e.clientY,
@@ -151,8 +163,14 @@ export default function App() {
     });
   };
 
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const handleToggleLock = () => {
-    if (!socket || !isHost) return;
+    if (!socket || !isHost || isMeetingEnded) return;
     socket.emit("toggle-lock", {
       docId: roomData.current.id,
       hostKey: roomData.current.hostKey,
@@ -162,7 +180,7 @@ export default function App() {
 
   const handleEndMeeting = () => {
     const confirmEnd = window.confirm(
-      "Are you sure you want to end this meeting for everyone? The document session will be terminated."
+      "Are you sure you want to end this meeting for everyone? The document will be permanently locked and wiped."
     );
 
     if (confirmEnd) {
@@ -172,9 +190,12 @@ export default function App() {
           hostKey: roomData.current.hostKey,
         });
       }
+      setIsMeetingEnded(true);
+      setIsLocked(true);
+      if (editorRef.current) {
+        editorRef.current.contentEditable = "false";
+      }
       localStorage.removeItem(`syncscript_host_${roomData.current.id}`);
-      alert("Meeting ended.");
-      window.location.href = "/";
     }
   };
 
@@ -202,122 +223,182 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const isEditable = !isMeetingEnded && (!isLocked || isHost);
+
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        height: "100vh",
-        backgroundColor: "#121218",
-        color: "#ffffff",
-        fontFamily: "system-ui, -apple-system, sans-serif",
+        minHeight: "100vh",
+        backgroundColor: "#0d0e15",
+        color: "#e2e8f0",
+        fontFamily:
+          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
       }}
       onMouseMove={handleMouseMove}
     >
-      {/* Live Remote Cursors */}
-      {Object.entries(remoteCursors).map(([id, cursor]) => (
-        <div
-          key={id}
-          style={{
-            position: "fixed",
-            left: `${cursor.x}px`,
-            top: `${cursor.y}px`,
-            pointerEvents: "none",
-            zIndex: 9999,
-          }}
-        >
+      {/* Remote Collaborators Cursors */}
+      {!isMeetingEnded &&
+        Object.entries(remoteCursors).map(([id, cursor]) => (
           <div
+            key={id}
             style={{
-              width: "12px",
-              height: "12px",
-              backgroundColor: cursor.color || "#10b981",
-              borderRadius: "50%",
+              position: "fixed",
+              left: `${cursor.x}px`,
+              top: `${cursor.y}px`,
+              pointerEvents: "none",
+              zIndex: 9999,
+              transition: "left 0.08s linear, top 0.08s linear",
             }}
-          />
-        </div>
-      ))}
+          >
+            <div
+              style={{
+                width: "12px",
+                height: "12px",
+                backgroundColor: cursor.color || "#10b981",
+                borderRadius: "50%",
+                boxShadow: "0 0 8px rgba(0,0,0,0.5)",
+              }}
+            />
+          </div>
+        ))}
 
-      {/* Styled Top Header */}
+      {/* Top Collaborative Navbar */}
       <header
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
           padding: "12px 24px",
-          backgroundColor: "#1e1e2e",
-          borderBottom: "1px solid #2e2e3e",
+          backgroundColor: "#161722",
+          borderBottom: "1px solid #232536",
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-          <span style={{ fontSize: "1.2rem", fontWeight: "700" }}>
-            ⚡ SyncScript
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <span
             style={{
-              fontSize: "0.85rem",
-              backgroundColor: "#2a2b3d",
+              fontSize: "1.25rem",
+              fontWeight: "700",
+              color: "#60a5fa",
+              letterSpacing: "-0.5px",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            ⚡ SyncScript
+          </span>
+
+          <span
+            style={{
+              fontSize: "0.82rem",
+              backgroundColor: "#202234",
+              border: "1px solid #2e3047",
               padding: "4px 10px",
               borderRadius: "6px",
-              color: "#a0a0b8",
+              color: "#94a3b8",
+              fontFamily: "monospace",
             }}
           >
             Room: {roomData.current.id.slice(0, 8)}...
           </span>
+
           <span
             style={{
-              fontSize: "0.85rem",
-              backgroundColor: "#2a2b3d",
+              fontSize: "0.82rem",
+              backgroundColor: "#1a2c26",
+              border: "1px solid #22493d",
               padding: "4px 10px",
               borderRadius: "6px",
-              color: "#10b981",
+              color: "#34d399",
+              fontWeight: "500",
             }}
           >
             👥 {userCount} online
           </span>
+
+          <span
+            style={{
+              fontSize: "0.82rem",
+              backgroundColor: isHost ? "#1e293b" : "#1f2937",
+              border: `1px solid ${isHost ? "#3b82f6" : "#4b5563"}`,
+              color: isHost ? "#93c5fd" : "#d1d5db",
+              padding: "4px 10px",
+              borderRadius: "6px",
+              fontWeight: "600",
+            }}
+          >
+            {isHost ? "👑 Host" : "👤 Collaborator"}
+          </span>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <button
-            onClick={handleExportTxt}
+            onClick={handleCopyLink}
             style={{
-              backgroundColor: "#2a2b3d",
+              backgroundColor: copied ? "#059669" : "#222538",
               color: "#ffffff",
-              border: "1px solid #3e3f58",
+              border: "1px solid #333752",
               padding: "6px 12px",
               borderRadius: "6px",
               cursor: "pointer",
+              fontSize: "0.85rem",
+              fontWeight: "500",
+              transition: "background-color 0.2s",
+            }}
+          >
+            {copied ? "✅ Copied!" : "📋 Copy Link"}
+          </button>
+
+          <button
+            onClick={handleExportTxt}
+            style={{
+              backgroundColor: "#222538",
+              color: "#cbd5e1",
+              border: "1px solid #333752",
+              padding: "6px 12px",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "0.85rem",
               fontWeight: "500",
             }}
           >
             Export TXT
           </button>
+
           <button
             onClick={handleExportMd}
             style={{
-              backgroundColor: "#2a2b3d",
-              color: "#ffffff",
-              border: "1px solid #3e3f58",
+              backgroundColor: "#222538",
+              color: "#cbd5e1",
+              border: "1px solid #333752",
               padding: "6px 12px",
               borderRadius: "6px",
               cursor: "pointer",
+              fontSize: "0.85rem",
               fontWeight: "500",
             }}
           >
             Export MD
           </button>
 
-          {/* Host Controls */}
-          {isHost && (
+          {/* Host Exclusive Actions */}
+          {isHost && !isMeetingEnded && (
             <>
               <button
                 onClick={handleToggleLock}
                 style={{
-                  backgroundColor: isLocked ? "#f59e0b" : "#2a2b3d",
+                  backgroundColor: isLocked ? "#d97706" : "#222538",
                   color: "#ffffff",
-                  border: "1px solid #3e3f58",
+                  border: "1px solid #4a4e70",
                   padding: "6px 14px",
                   borderRadius: "6px",
                   cursor: "pointer",
+                  fontSize: "0.85rem",
                   fontWeight: "600",
                 }}
               >
@@ -327,13 +408,14 @@ export default function App() {
               <button
                 onClick={handleEndMeeting}
                 style={{
-                  backgroundColor: "#ef4444",
+                  backgroundColor: "#dc2626",
                   color: "#ffffff",
                   border: "none",
                   padding: "6px 14px",
                   borderRadius: "6px",
-                  fontWeight: "600",
                   cursor: "pointer",
+                  fontSize: "0.85rem",
+                  fontWeight: "600",
                 }}
               >
                 End Meeting
@@ -343,23 +425,68 @@ export default function App() {
         </div>
       </header>
 
-      {/* Workspace Area */}
+      {/* Main Workspace Sheet Surface */}
       <main
         style={{
           flex: 1,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          padding: "24px",
+          padding: "36px 16px",
+          backgroundColor: "#0d0e15",
         }}
       >
-        {isLocked && !isHost && (
+        {/* Meeting Ended Alert Banner */}
+        {isMeetingEnded && (
           <div
             style={{
-              backgroundColor: "#78350f",
+              width: "100%",
+              maxWidth: "850px",
+              backgroundColor: "#450a0a",
+              border: "1px solid #991b1b",
+              color: "#fecaca",
+              padding: "14px 20px",
+              borderRadius: "8px",
+              marginBottom: "20px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+            }}
+          >
+            <div>
+              <strong>🛑 Meeting Terminated:</strong> The host has ended this
+              session. Editing is permanently disabled on this pad.
+            </div>
+            <button
+              onClick={() => (window.location.href = "/")}
+              style={{
+                backgroundColor: "#dc2626",
+                color: "#ffffff",
+                border: "none",
+                padding: "6px 14px",
+                borderRadius: "6px",
+                cursor: "pointer",
+                fontWeight: "600",
+                fontSize: "0.85rem",
+              }}
+            >
+              Start New Meeting
+            </button>
+          </div>
+        )}
+
+        {/* Lock Notice Banner */}
+        {isLocked && !isHost && !isMeetingEnded && (
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "850px",
+              backgroundColor: "#451a03",
+              border: "1px solid #92400e",
               color: "#fef3c7",
-              padding: "8px 16px",
-              borderRadius: "6px",
+              padding: "10px 18px",
+              borderRadius: "8px",
               marginBottom: "16px",
               fontSize: "0.9rem",
             }}
@@ -368,24 +495,30 @@ export default function App() {
           </div>
         )}
 
+        {/* Collaborative Document Pad Canvas */}
         <div
           ref={editorRef}
-          contentEditable={!isLocked || isHost}
+          contentEditable={isEditable}
           onInput={handleInput}
+          onKeyDown={handleKeyDown}
           suppressContentEditableWarning={true}
           style={{
             width: "100%",
             maxWidth: "850px",
-            minHeight: "75vh",
-            backgroundColor: "#181824",
-            border: "1px solid #2e2e3e",
-            borderRadius: "8px",
-            padding: "24px",
+            minHeight: "78vh",
+            backgroundColor: "#161722",
+            border: `1px solid ${isMeetingEnded ? "#7f1d1d" : "#232536"}`,
+            borderRadius: "10px",
+            padding: "40px 48px",
             fontSize: "1.05rem",
-            lineHeight: "1.6",
+            lineHeight: "1.75",
             outline: "none",
-            cursor: isLocked && !isHost ? "not-allowed" : "text",
+            boxShadow: "0 10px 30px rgba(0, 0, 0, 0.4)",
+            cursor: !isEditable ? "not-allowed" : "text",
+            opacity: isMeetingEnded ? 0.7 : 1,
+            color: "#f1f5f9",
           }}
+          placeholder="Start typing your collaborative notes here..."
         />
       </main>
     </div>
