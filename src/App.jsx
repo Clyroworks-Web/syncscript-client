@@ -7,7 +7,6 @@ const SERVER_URL =
 
 export default function App() {
   const [socket, setSocket] = useState(null);
-  const [isHost, setIsHost] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [userCount, setUserCount] = useState(1);
   const [remoteCursors, setRemoteCursors] = useState({});
@@ -15,22 +14,32 @@ export default function App() {
   const editorRef = useRef(null);
   const saveTimeoutRef = useRef(null);
 
-  // Extract or generate document UUID from URL path
-  const roomData = useRef({
-    id: (() => {
-      const pathParts = window.location.pathname.split("/").filter(Boolean);
-      const existingId = pathParts[pathParts.length - 1];
-      if (existingId && existingId !== "documents") {
-        return existingId;
-      }
-      const newId = crypto.randomUUID();
-      window.history.replaceState(null, "", `/documents/${newId}`);
-      return newId;
-    })(),
-    hostKey: null,
-  });
+  // Determine room ID and host credentials immediately on page load
+  const roomData = useRef((() => {
+    const pathParts = window.location.pathname.split("/").filter(Boolean);
+    const existingId = pathParts[pathParts.length - 1];
+    const isNew = !existingId || existingId === "documents";
+    const id = isNew ? crypto.randomUUID() : existingId;
 
-  // 1. Primary Socket Connection & Live Cursor Listeners
+    if (isNew) {
+      window.history.replaceState(null, "", `/documents/${id}`);
+    }
+
+    let hostKey = localStorage.getItem(`syncscript_host_${id}`);
+    let isOwner = Boolean(hostKey) || isNew;
+
+    if (isNew && !hostKey) {
+      hostKey = crypto.randomUUID();
+      localStorage.setItem(`syncscript_host_${id}`, hostKey);
+    }
+
+    return { id, hostKey, isOwner };
+  })());
+
+  // Instant host state assignment (no waiting for backend signal)
+  const [isHost, setIsHost] = useState(roomData.current.isOwner);
+
+  // 1. Establish Socket Connection
   useEffect(() => {
     const s = io(SERVER_URL, {
       transports: ["websocket", "polling"],
@@ -59,26 +68,23 @@ export default function App() {
     };
   }, []);
 
-  // 2. Room Management, Document Sync & Termination Handling
+  // 2. Room Synchronization & Event Handlers
   useEffect(() => {
     if (!socket) return;
 
-    const docId = roomData.current.id;
-    const storedHostKey = localStorage.getItem(`syncscript_host_${docId}`);
-    roomData.current.hostKey = storedHostKey;
+    const { id: docId, hostKey } = roomData.current;
 
     socket.emit("get-document", {
       docId,
-      hostKey: storedHostKey,
+      hostKey,
     });
 
     socket.on("room-init", (data) => {
-      setIsHost(data.isHost);
-      setIsLocked(data.isLocked);
-
-      if (data.isHost && data.assignedHostKey) {
-        localStorage.setItem(`syncscript_host_${docId}`, data.assignedHostKey);
-        roomData.current.hostKey = data.assignedHostKey;
+      if (data && typeof data.isHost === "boolean") {
+        setIsHost(data.isHost);
+      }
+      if (data && typeof data.isLocked === "boolean") {
+        setIsLocked(data.isLocked);
       }
     });
 
@@ -104,7 +110,6 @@ export default function App() {
       setUserCount(count);
     });
 
-    // Kill switch listener: triggers when host ends the session
     socket.on("meeting-terminated", () => {
       alert("The host has ended this meeting session.");
       if (roomData.current?.id) {
@@ -123,17 +128,14 @@ export default function App() {
     };
   }, [socket]);
 
-  // 3. User Handlers
+  // 3. Document Editing & Host Actions
   const handleInput = () => {
     if (isLocked && !isHost) return;
     if (!socket || !editorRef.current) return;
 
     const content = editorRef.current.innerHTML;
-
-    // Real-time delta broadcast to participants
     socket.emit("send-changes", content);
 
-    // Debounced save to MongoDB Atlas (1000ms idle threshold)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       socket.emit("save-document", content);
@@ -153,24 +155,26 @@ export default function App() {
     if (!socket || !isHost) return;
     socket.emit("toggle-lock", {
       docId: roomData.current.id,
-      hostKey:
-        roomData.current.hostKey ||
-        localStorage.getItem(`syncscript_host_${roomData.current.id}`),
+      hostKey: roomData.current.hostKey,
     });
+    setIsLocked((prev) => !prev);
   };
 
   const handleEndMeeting = () => {
     const confirmEnd = window.confirm(
-      "Are you sure you want to end this meeting for everyone? The session will terminate."
+      "Are you sure you want to end this meeting for everyone? The document session will be terminated."
     );
 
-    if (confirmEnd && socket) {
-      socket.emit("end-meeting", {
-        docId: roomData.current.id,
-        hostKey:
-          roomData.current.hostKey ||
-          localStorage.getItem(`syncscript_host_${roomData.current.id}`),
-      });
+    if (confirmEnd) {
+      if (socket) {
+        socket.emit("end-meeting", {
+          docId: roomData.current.id,
+          hostKey: roomData.current.hostKey,
+        });
+      }
+      localStorage.removeItem(`syncscript_host_${roomData.current.id}`);
+      alert("Meeting ended.");
+      window.location.href = "/";
     }
   };
 
@@ -198,14 +202,22 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // 4. UI Layout
   return (
-    <div className="app-container" onMouseMove={handleMouseMove}>
-      {/* Remote Collaborator Cursors Overlay */}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        backgroundColor: "#121218",
+        color: "#ffffff",
+        fontFamily: "system-ui, -apple-system, sans-serif",
+      }}
+      onMouseMove={handleMouseMove}
+    >
+      {/* Live Remote Cursors */}
       {Object.entries(remoteCursors).map(([id, cursor]) => (
         <div
           key={id}
-          className="remote-cursor"
           style={{
             position: "fixed",
             left: `${cursor.x}px`,
@@ -225,37 +237,94 @@ export default function App() {
         </div>
       ))}
 
-      {/* Top Navbar */}
-      <header className="navbar">
-        <div className="navbar-brand">
-          <span className="brand-logo">⚡</span>
-          <span className="brand-title">SyncScript</span>
-          <span className="room-badge">
+      {/* Styled Top Header */}
+      <header
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "12px 24px",
+          backgroundColor: "#1e1e2e",
+          borderBottom: "1px solid #2e2e3e",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          <span style={{ fontSize: "1.2rem", fontWeight: "700" }}>
+            ⚡ SyncScript
+          </span>
+          <span
+            style={{
+              fontSize: "0.85rem",
+              backgroundColor: "#2a2b3d",
+              padding: "4px 10px",
+              borderRadius: "6px",
+              color: "#a0a0b8",
+            }}
+          >
             Room: {roomData.current.id.slice(0, 8)}...
           </span>
-          <span className="user-badge">👥 {userCount} online</span>
+          <span
+            style={{
+              fontSize: "0.85rem",
+              backgroundColor: "#2a2b3d",
+              padding: "4px 10px",
+              borderRadius: "6px",
+              color: "#10b981",
+            }}
+          >
+            👥 {userCount} online
+          </span>
         </div>
 
-        <div className="navbar-controls">
-          <button className="btn btn-secondary" onClick={handleExportTxt}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <button
+            onClick={handleExportTxt}
+            style={{
+              backgroundColor: "#2a2b3d",
+              color: "#ffffff",
+              border: "1px solid #3e3f58",
+              padding: "6px 12px",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontWeight: "500",
+            }}
+          >
             Export TXT
           </button>
-          <button className="btn btn-secondary" onClick={handleExportMd}>
+          <button
+            onClick={handleExportMd}
+            style={{
+              backgroundColor: "#2a2b3d",
+              color: "#ffffff",
+              border: "1px solid #3e3f58",
+              padding: "6px 12px",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontWeight: "500",
+            }}
+          >
             Export MD
           </button>
 
-          {/* Host Exclusive Controls */}
+          {/* Host Controls */}
           {isHost && (
             <>
               <button
-                className={`btn ${isLocked ? "btn-warning" : "btn-secondary"}`}
                 onClick={handleToggleLock}
+                style={{
+                  backgroundColor: isLocked ? "#f59e0b" : "#2a2b3d",
+                  color: "#ffffff",
+                  border: "1px solid #3e3f58",
+                  padding: "6px 14px",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontWeight: "600",
+                }}
               >
                 {isLocked ? "🔒 Unlock Room" : "🔓 Lock Room"}
               </button>
 
               <button
-                className="btn btn-danger"
                 onClick={handleEndMeeting}
                 style={{
                   backgroundColor: "#ef4444",
@@ -265,7 +334,6 @@ export default function App() {
                   borderRadius: "6px",
                   fontWeight: "600",
                   cursor: "pointer",
-                  marginLeft: "8px",
                 }}
               >
                 End Meeting
@@ -275,21 +343,49 @@ export default function App() {
         </div>
       </header>
 
-      {/* Editor Surface */}
-      <main className="editor-container">
+      {/* Workspace Area */}
+      <main
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          padding: "24px",
+        }}
+      >
         {isLocked && !isHost && (
-          <div className="lock-banner">
+          <div
+            style={{
+              backgroundColor: "#78350f",
+              color: "#fef3c7",
+              padding: "8px 16px",
+              borderRadius: "6px",
+              marginBottom: "16px",
+              fontSize: "0.9rem",
+            }}
+          >
             ⚠️ The host has locked this document. It is currently read-only.
           </div>
         )}
 
         <div
           ref={editorRef}
-          className={`editor-surface ${isLocked && !isHost ? "readonly" : ""}`}
           contentEditable={!isLocked || isHost}
           onInput={handleInput}
           suppressContentEditableWarning={true}
-          placeholder="Start typing your meeting notes here..."
+          style={{
+            width: "100%",
+            maxWidth: "850px",
+            minHeight: "75vh",
+            backgroundColor: "#181824",
+            border: "1px solid #2e2e3e",
+            borderRadius: "8px",
+            padding: "24px",
+            fontSize: "1.05rem",
+            lineHeight: "1.6",
+            outline: "none",
+            cursor: isLocked && !isHost ? "not-allowed" : "text",
+          }}
         />
       </main>
     </div>
