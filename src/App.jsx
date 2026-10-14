@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 
-const SERVER_URL =
-  import.meta.env.VITE_SERVER_URL || "https://syncscript-server-0rc2.onrender.com";
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://syncscript-server-0rc2.onrender.com";
+const socket = io(SERVER_URL);
 
 export default function App() {
   const [socket, setSocket] = useState(null);
