@@ -1,8 +1,19 @@
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://syncscript-server-0rc2.onrender.com";
-const socket = io("https://syncscript-server-0rc2.onrender.com");
+const getCleanUrl = (url) => {
+  if (!url) return "https://syncscript-server-0rc2.onrender.com";
+  // Extract proper http/https URL if markdown syntax [url](url) or extra quotes got pasted in
+  const match = url.match(/https?:\/\/[^\s)\]"']+/);
+  if (match) return match[0];
+  if (url.includes("render.com")) return "https://syncscript-server-0rc2.onrender.com";
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    return "https://syncscript-server-0rc2.onrender.com";
+  }
+  return url.trim();
+};
+
+const SERVER_URL = getCleanUrl(import.meta.env.VITE_SERVER_URL);
 
 export default function App() {
   const [socket, setSocket] = useState(null);
