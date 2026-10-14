@@ -50,20 +50,24 @@
   }
 }
 
-body {
-  margin: 0;
+/* Global Box-Sizing and Mobile Screen Fit */
+*, *::before, *::after {
+  box-sizing: border-box;
 }
 
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background-color: #fbf9f5; /* matches your app's soft background */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
   display: flex;
   flex-direction: column;
-  box-sizing: border-box;
 }
 
 h1,
