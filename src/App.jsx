@@ -374,7 +374,11 @@ export default function App() {
             fontWeight: "500",
             display: "flex",
             alignItems: "center",
+            justifyContent: "center",
             gap: "6px",
+            minWidth: "190px",
+            whiteSpace: "nowrap",
+            boxSizing: "border-box",
           }}
         >
           <span>☁️</span>
