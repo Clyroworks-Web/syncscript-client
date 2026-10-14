@@ -113,3 +113,118 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/* Bottom Styling Toolbar Dock */
+.styling-dock {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 50;
+  width: auto;
+  max-width: calc(100vw - 32px);
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+
+@media (min-width: 769px) {
+  .styling-dock {
+    /* Offset by 100px to center within the collaborative area when 200px sidebar is present */
+    left: calc(50% + 100px);
+    max-width: calc(100vw - 240px);
+  }
+}
+
+.styling-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background-color: #ffffff;
+  border: 1.5px solid #d1d5db;
+  border-radius: 10px;
+  padding: 6px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.styling-font-select {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #334155;
+  background-color: #ffffff;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.styling-font-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.styling-tool-btn {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  font-size: 14px;
+  color: #334155;
+  transition: background-color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.styling-tool-btn:hover:not(:disabled) {
+  background-color: #f1f5f9;
+}
+
+.styling-tool-btn:active:not(:disabled) {
+  background-color: #e2e8f0;
+}
+
+.styling-tool-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.styling-divider {
+  width: 1px;
+  height: 18px;
+  background-color: #e2e8f0;
+  flex-shrink: 0;
+}
+
+.styling-color-input {
+  width: 28px;
+  height: 28px;
+  padding: 2px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+  background-color: #ffffff;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.styling-color-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+

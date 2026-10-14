@@ -230,7 +230,13 @@ export default function App() {
   // Formatting actions
   const formatText = (cmd, val = null) => {
     if (isMeetingEnded || (isLocked && !isHost)) return;
-    document.execCommand(cmd, false, val);
+    let finalVal = val;
+    if (cmd === "fontName") {
+      if (val === "Sans" || val === "sans-serif") finalVal = "sans-serif";
+      else if (val === "Serif" || val === "serif") finalVal = "serif";
+      else if (val === "Mono" || val === "monospace") finalVal = "monospace";
+    }
+    document.execCommand(cmd, false, finalVal);
     if (editorRef.current) editorRef.current.focus();
   };
 
@@ -646,134 +652,87 @@ export default function App() {
           </div>
 
           {/* BOTTOM FLOATING DOCK */}
-          <div
-            style={{
-              position: "fixed",
-              bottom: "16px",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: "4px",
-              zIndex: 50,
-            }}
-          >
+          <div className="styling-dock">
             <span
               style={{
                 fontSize: "11px",
                 fontWeight: "700",
                 letterSpacing: "0.6px",
                 color: "#64748b",
+                userSelect: "none",
               }}
             >
               FONT & STYLING
             </span>
 
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                backgroundColor: "#ffffff",
-                border: "1.5px solid #d1d5db",
-                borderRadius: "10px",
-                padding: "6px 14px",
-                boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
-              }}
-            >
+            <div className="styling-toolbar">
               <select
+                className="styling-font-select"
                 onChange={(e) => formatText("fontName", e.target.value)}
                 disabled={!isEditable}
-                style={{
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "6px",
-                  padding: "4px 8px",
-                  fontSize: "12px",
-                  outline: "none",
-                  cursor: "pointer",
-                }}
+                defaultValue="Sans"
+                aria-label="Font Family"
               >
-                <option value="Sans-Serif">Sans</option>
-                <option value="Georgia">Serif</option>
-                <option value="Courier New">Mono</option>
+                <option value="Sans">Sans</option>
+                <option value="Serif">Serif</option>
+                <option value="Mono">Mono</option>
               </select>
 
-              <div style={{ width: "1px", height: "18px", backgroundColor: "#e2e8f0" }} />
+              <div className="styling-divider" />
 
               <button
+                type="button"
+                className="styling-tool-btn"
                 onClick={() => formatText("bold")}
                 disabled={!isEditable}
-                style={{
-                  background: "none",
-                  border: "none",
-                  fontWeight: "800",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  padding: "2px 6px",
-                }}
+                title="Bold"
+                style={{ fontWeight: "800" }}
               >
                 B
               </button>
 
               <button
+                type="button"
+                className="styling-tool-btn"
                 onClick={() => formatText("italic")}
                 disabled={!isEditable}
-                style={{
-                  background: "none",
-                  border: "none",
-                  fontStyle: "italic",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  padding: "2px 6px",
-                }}
+                title="Italic"
+                style={{ fontStyle: "italic" }}
               >
                 I
               </button>
 
               <button
+                type="button"
+                className="styling-tool-btn"
                 onClick={() => formatText("underline")}
                 disabled={!isEditable}
-                style={{
-                  background: "none",
-                  border: "none",
-                  textDecoration: "underline",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  padding: "2px 6px",
-                }}
+                title="Underline"
+                style={{ textDecoration: "underline" }}
               >
                 U
               </button>
 
               <button
+                type="button"
+                className="styling-tool-btn"
                 onClick={() => formatText("insertUnorderedList")}
                 disabled={!isEditable}
-                style={{
-                  background: "none",
-                  border: "none",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  padding: "2px 6px",
-                }}
+                title="Bullet List"
               >
                 ≡
               </button>
 
-              <div style={{ width: "1px", height: "18px", backgroundColor: "#e2e8f0" }} />
+              <div className="styling-divider" />
 
               <input
                 type="color"
+                className="styling-color-input"
                 defaultValue="#000000"
                 onChange={(e) => formatText("foreColor", e.target.value)}
                 disabled={!isEditable}
                 title="Pick Text Color"
-                style={{
-                  width: "22px",
-                  height: "22px",
-                  border: "none",
-                  cursor: "pointer",
-                  borderRadius: "4px",
-                  backgroundColor: "transparent",
-                }}
+                aria-label="Text Color"
               />
             </div>
           </div>
